@@ -1,9 +1,11 @@
 __pycache__/
 *.pyc
+.DS_Store
+.vscode/
+.idea/
 env/
 venv/
 .venv/
-.vscode/
-.idea/
-.DS_Store
-.pytest_cache/
+
+eot_data.zip
+starter.zip
