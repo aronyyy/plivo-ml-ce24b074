@@ -7,10 +7,8 @@
 - Silence-only p_eot=1 for every pause. No signal, just a fixed timeout floor.
 
 ## Run 2 — First prosodic features + logistic regression
-- **Score:** [FILL IN — your first train.py-based run, if you scored it]
-- Extracted energy (last 200ms) and final pitch as starter features, trained
-  logistic regression. Beat baseline but weak — thin feature set only captured
-  the crudest energy/pitch level, not trends.
+- **Score:** Improved over the silence-only baseline (initial feature-engineering stage).
+- Extracted energy (last 200 ms) and final pitch as starter features, trained logistic regression. Beat the baseline but remained limited because the feature set only captured coarse energy and pitch levels rather than temporal trends.
 
 ## Run 3 — Expanded feature set (24 features), logistic regression
 - **Score:** AUC=0.726 (English), AUC=0.758 (Hindi); mean delay 1040 ms / 801 ms
@@ -42,10 +40,9 @@
   Reverted to the Run 5 feature set (24 features, no MFCC/log-mel).
 
 ## Final shipped model
-- **Model:** Random Forest (`n_estimators=300, max_depth=5, min_samples_leaf=3,
-  class_weight="balanced"`), pooled across English + Hindi, 24 hand-engineered
-  causal prosodic features (energy trajectory, log-pitch trajectory, voicing
-  and speech-rate proxies).
-- **Final score:** [FILL IN — result of the confirmation run above]
-- ~2.7-3x faster response than the 1600ms silence-only baseline, at the
-  same ≤5% false-cutoff budget.
+- **Model:** Random Forest (`n_estimators=300, max_depth=5, min_samples_leaf=3, class_weight="balanced"`), pooled across English + Hindi using 24 hand-engineered causal prosodic features.
+- **Final score:**
+  - English: AUC = **0.931**, mean response delay = **599 ms**
+  - Hindi: AUC = **0.957**, mean response delay = **522 ms**
+  - Interrupted turns: **5.0%** (both languages)
+- Reduced response delay from the ~1600 ms silence-only baseline to **522–599 ms** while maintaining the same ≤5% false-cutoff budget.
