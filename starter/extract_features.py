@@ -26,7 +26,7 @@ FEATURE_NAMES = [
     "energy_drop_ratio_200",   # 11
     "energy_drop_ratio_400",   # 12
     "energy_rel_to_turn_mean", # 13
-    "f0_last_voiced_mean",     # 14 (log-Hz, semitone-ish)
+    "f0_last_voiced_mean",     # 14
     "f0_slope_last400ms",      # 15
     "f0_final_vs_mean",        # 16
     "f0_range_last1s",         # 17

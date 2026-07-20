@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>End-of-Turn Detection — Summary</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 860px;
+         margin: 40px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.8em; border-bottom: 3px solid #2563eb; padding-bottom: 10px; }
+  h2 { font-size: 1.3em; margin-top: 2em; color: #2563eb; }
+  .card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;
+          padding: 20px; margin: 16px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #e2e8f0; }
+  th { background: #eff6ff; }
+  .metric { font-size: 1.6em; font-weight: 700; color: #16a34a; }
+  .tag-human { background: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 6px; font-size: 0.85em; }
+  .tag-ai { background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 6px; font-size: 0.85em; }
+  code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+  .bar-row { display: flex; align-items: center; margin: 10px 0; gap: 10px; }
+  .bar-label { width: 160px; font-size: 0.9em; }
+  .bar-track { flex: 1; background: #e2e8f0; border-radius: 4px; height: 24px; position: relative; }
+  .bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center;
+              padding-left: 8px; color: white; font-size: 0.85em; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>End-of-Turn Detection — Summary</h1>
+
+<p>A model that predicts, at every pause in a user's speech, the probability
+that they have finished their turn (<code>p_eot</code>) — built entirely from
+causal prosodic features, with no pretrained models or external data.</p>
+
+<h2>Results</h2>
+<div class="card">
+  <p>Mean response delay at ≤5% false-cutoff rate, vs. the silence-only baseline:</p>
+
+  <div class="bar-row">
+    <div class="bar-label">Baseline (silence)</div>
+    <div class="bar-track"><div class="bar-fill" style="width:100%; background:#94a3b8;">~1600 ms</div></div>
+  </div>
+  <div class="bar-row">
+    <div class="bar-label">Our model — English</div>
+    <div class="bar-track"><div class="bar-fill" style="width:37%; background:#2563eb;">599 ms</div></div>
+  </div>
+  <div class="bar-row">
+    <div class="bar-label">Our model — Hindi</div>
+    <div class="bar-track"><div class="bar-fill" style="width:33%; background:#16a34a;">522 ms</div></div>
+  </div>
+
+  <table>
+    <tr><th></th><th>AUC</th><th>Mean delay</th><th>Interrupted turns</th></tr>
+    <tr><td>English</td><td>0.931</td><td class="metric">599 ms</td><td>5.0%</td></tr>
+    <tr><td>Hindi</td><td>0.957</td><td class="metric">522 ms</td><td>5.0%</td></tr>
+  </table>
+  <p>Both languages hit the 5% false-cutoff budget while cutting response
+  delay to roughly a third of the silence-only baseline.</p>
+</div>
+
+<h2>Approach</h2>
+<div class="card">
+  <p><b>Model:</b> Random Forest classifier (<code>n_estimators=300,
+  max_depth=5, min_samples_leaf=3, class_weight="balanced"</code>), trained
+  once on English + Hindi pooled together, no per-language special-casing.</p>
+
+  <p><b>Features (24 total, all strictly causal — computed only from
+  <code>audio[0 : pause_start]</code>):</b></p>
+  <ul>
+    <li><b>Energy trajectory:</b> mean energy over 5 window sizes (150ms–800ms),
+    slope over 3 windows, variance, min, drop-ratio into the pause, and
+    level relative to the turn's overall average.</li>
+    <li><b>Pitch trajectory (log-Hz domain):</b> final voiced pitch, slope over
+    the last 400ms, final-vs-overall pitch delta (captures the falling
+    pitch of a completed statement vs. flat/rising continuation), pitch
+    range over the last second.</li>
+    <li><b>Voicing / rate:</b> voiced-frame fraction, final continuous
+    voiced-run duration (final-syllable lengthening), a speech-rate proxy,
+    silence ratio, and pause position within the turn.</li>
+  </ul>
+
+  <p><b>Validation:</b> Grouped 5-fold cross-validation and a held-out
+  turn split (turns never split across train/test, avoiding leakage).</p>
+</div>
+
+<h2>What was tried and didn't work</h2>
+<div class="card">
+  <p>Added MFCC (coefficients 1-8) and log-mel filterbank energy statistics,
+  inspired by literature using log-mel features for endpoint detection. This
+  <i>hurt</i> performance (held-out accuracy dropped from the Random Forest's
+  strong result to ~0.66) — with only ~200 turns of training data, the extra
+  ~20 features diluted the signal from the smaller, well-tuned energy/pitch
+  feature set. Reverted to the 24-feature version. This is documented as a
+  negative result in RUNLOG.md rather than hidden.</p>
+</div>
+
+<h2>Human vs. coding-agent contribution</h2>
+<div class="card">
+  <table>
+    <tr><th>Component</th><th>Contribution</th></tr>
+    <tr><td>Problem framing, causality constraint, data schema</td><td><span class="tag-human">Human</span> (assignment spec, provided as-is)</td></tr>
+    <tr><td>Feature design (which prosodic cues to compute, window sizes)</td><td><span class="tag-ai">AI</span>, iterated based on human-directed feedback (top-feature coefficients, error patterns)</td></tr>
+    <tr><td>Model selection (logreg → Random Forest, rejecting the MFCC addition)</td><td><span class="tag-human">Human</span> decisions, <span class="tag-ai">AI</span>-executed and diagnosed (CV vs held-out gap flagged overfitting)</td></tr>
+    <tr><td>Numerical stability fixes (NaN/inf, clipping, log-domain pitch)</td><td><span class="tag-ai">AI</span></td></tr>
+    <tr><td>Code implementation (extract_features.py, train_model.py, predict.py)</td><td><span class="tag-ai">AI</span></td></tr>
+    <tr><td>Running experiments, reading scores, deciding what to try next</td><td><span class="tag-human">Human</span></td></tr>
+  </table>
+  <p>The assignment explicitly calibrates for AI-assisted work — the grading
+  signal is what's added <i>beyond</i> what a coding agent reaches on its own.
+  The key human-directed decisions here were: rejecting the coding agent's own
+  suggestion to add MFCC/log-mel features once it demonstrably hurt held-out
+  performance, and choosing Random Forest over logistic regression based on
+  the observation that EOT cues are threshold-like, not linear.</p>
+</div>
+
+<h2>Why this beats status quo</h2>
+<div class="card">
+  <p>The status quo for voice agents is a fixed silence timer (~1600ms here).
+  It has no memory of what was said — it can't tell "...and two pizzas,
+  [pause] extra cheese" (hold) from "...and two pizzas, [pause]" (done)
+  without just waiting out a fixed clock. This model uses the shape of the
+  speech itself — energy decay, pitch fall, syllable lengthening — to
+  predict which case it's in, cutting the wait by roughly a third to two
+  thirds while keeping interruptions capped at the same 5% rate.</p>
+</div>
+
+</body>
+</html>

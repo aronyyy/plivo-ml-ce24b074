@@ -15,11 +15,39 @@ import pickle
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
+from sklearn.feature_selection import SelectFromModel
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GroupShuffleSplit, GroupKFold
 
 from features import load_wav
 from extract_features import extract_features, N_FEATURES
+
+
+def make_model(model_type, C=0.5):
+    if model_type == "logreg":
+        return LogisticRegression(max_iter=3000, class_weight="balanced", C=C)
+    if model_type == "rf":
+        return RandomForestClassifier(
+            n_estimators=300, max_depth=5, min_samples_leaf=3,
+            class_weight="balanced", random_state=0, n_jobs=-1)
+    if model_type == "gb":
+        return GradientBoostingClassifier(
+            n_estimators=200, max_depth=2, learning_rate=0.05,
+            subsample=0.8, random_state=0)
+    if model_type == "ensemble":
+        logreg = LogisticRegression(max_iter=3000, class_weight="balanced", C=C)
+        rf = RandomForestClassifier(
+            n_estimators=200, max_depth=4, min_samples_leaf=4,
+            max_features=0.5,  # see more features per split given high dim
+            class_weight="balanced", random_state=0, n_jobs=-1)
+        gb = GradientBoostingClassifier(
+            n_estimators=150, max_depth=2, learning_rate=0.05,
+            subsample=0.8, random_state=0)
+        return VotingClassifier(
+            estimators=[("logreg", logreg), ("rf", rf), ("gb", gb)],
+            voting="soft")
+    raise ValueError(model_type)
 
 
 def build_dataset(data_dirs):
@@ -58,6 +86,12 @@ def main():
     ap.add_argument("--data_dir", required=True, nargs="+",
                      help="one or more data dirs, e.g. eot_data/english eot_data/hindi")
     ap.add_argument("--model_out", required=True)
+    ap.add_argument("--model_type", default="logreg", choices=["logreg", "rf", "gb", "ensemble"])
+    ap.add_argument("--top_k", type=int, default=None,
+                     help="if set, keep only the top-K most important features "
+                          "(selected via a quick RF fit) before final training. "
+                          "Recommended when feature count is large relative to "
+                          "sample size, e.g. --top_k 15")
     args = ap.parse_args()
 
     X, y, groups, keys, meta = build_dataset(args.data_dir)
@@ -72,23 +106,48 @@ def main():
     hi = np.percentile(X, 99, axis=0)
     X = np.clip(X, lo, hi)
 
+    selected_idx = None
+    if args.top_k is not None:
+        from extract_features import FEATURE_NAMES
+        probe = RandomForestClassifier(n_estimators=300, max_depth=5,
+                                         class_weight="balanced", random_state=0, n_jobs=-1)
+        probe.fit(StandardScaler().fit_transform(X), y)
+        importances = probe.feature_importances_
+        selected_idx = np.argsort(-importances)[:args.top_k]
+        print(f"\nselected top {args.top_k} features:")
+        for i in selected_idx:
+            print(f"  {FEATURE_NAMES[i]:28s} {importances[i]:.3f}")
+        X = X[:, selected_idx]
+        lo = lo[selected_idx]
+        hi = hi[selected_idx]
+
     # small C sweep via grouped CV (feature quality matters more than this,
     # but it's a cheap win)
     gkf = GroupKFold(n_splits=min(5, len(set(groups))))
-    candidate_Cs = [0.1, 0.3, 0.5, 1.0, 2.0]
-    best_C, best_cv_acc = 0.5, -1.0
-    for C in candidate_Cs:
+    best_C = 0.5
+    if args.model_type == "logreg":
+        candidate_Cs = [0.1, 0.3, 0.5, 1.0, 2.0]
+        best_cv_acc = -1.0
+        for C in candidate_Cs:
+            accs = []
+            for tr_i, te_i in gkf.split(X, y, groups):
+                sc = StandardScaler().fit(X[tr_i])
+                c = make_model("logreg", C=C)
+                c.fit(sc.transform(X[tr_i]), y[tr_i])
+                accs.append(c.score(sc.transform(X[te_i]), y[te_i]))
+            mean_acc = np.mean(accs)
+            print(f"  C={C:<5} 5-fold CV accuracy: mean={mean_acc:.3f} std={np.std(accs):.3f}")
+            if mean_acc > best_cv_acc:
+                best_cv_acc, best_C = mean_acc, C
+        print(f"selected C={best_C} (best CV accuracy={best_cv_acc:.3f})")
+    else:
         accs = []
         for tr_i, te_i in gkf.split(X, y, groups):
             sc = StandardScaler().fit(X[tr_i])
-            c = LogisticRegression(max_iter=3000, class_weight="balanced", C=C)
+            c = make_model(args.model_type)
             c.fit(sc.transform(X[tr_i]), y[tr_i])
             accs.append(c.score(sc.transform(X[te_i]), y[te_i]))
-        mean_acc = np.mean(accs)
-        print(f"  C={C:<5} 5-fold CV accuracy: mean={mean_acc:.3f} std={np.std(accs):.3f}")
-        if mean_acc > best_cv_acc:
-            best_cv_acc, best_C = mean_acc, C
-    print(f"selected C={best_C} (best CV accuracy={best_cv_acc:.3f})")
+        print(f"{args.model_type} 5-fold CV accuracy: mean={np.mean(accs):.3f} std={np.std(accs):.3f}")
 
     # held-out check, split by TURN so no leakage
     gss = GroupShuffleSplit(n_splits=1, test_size=0.25, random_state=0)
@@ -98,7 +157,7 @@ def main():
     X_tr = scaler.fit_transform(X[tr_idx])
     X_te = scaler.transform(X[te_idx])
 
-    clf = LogisticRegression(max_iter=3000, class_weight="balanced", C=best_C)
+    clf = make_model(args.model_type, C=best_C)
     clf.fit(X_tr, y[tr_idx])
     held_out_acc = clf.score(X_te, y[te_idx])
     print(f"held-out turn accuracy: {held_out_acc:.3f} "
@@ -107,22 +166,30 @@ def main():
     # refit on ALL data for the shipped model
     scaler_final = StandardScaler()
     X_all = scaler_final.fit_transform(X)
-    clf_final = LogisticRegression(max_iter=3000, class_weight="balanced", C=best_C)
+    clf_final = make_model(args.model_type, C=best_C)
     clf_final.fit(X_all, y)
 
     with open(args.model_out, "wb") as f:
         pickle.dump({"scaler": scaler_final, "clf": clf_final,
                      "n_features": N_FEATURES,
-                     "clip_lo": lo, "clip_hi": hi}, f)
+                     "clip_lo": lo, "clip_hi": hi,
+                     "selected_idx": selected_idx}, f)
     print(f"saved model -> {args.model_out}")
 
-    # print feature importance (coef magnitude, since features are standardized)
+    # print feature importance
     from extract_features import FEATURE_NAMES
-    coefs = clf_final.coef_[0]
-    order = np.argsort(-np.abs(coefs))
-    print("\ntop features by |coef| (standardized):")
-    for i in order[:8]:
-        print(f"  {FEATURE_NAMES[i]:28s} {coefs[i]:+.3f}")
+    if hasattr(clf_final, "coef_"):
+        coefs = clf_final.coef_[0]
+        order = np.argsort(-np.abs(coefs))
+        print("\ntop features by |coef| (standardized):")
+        for i in order[:8]:
+            print(f"  {FEATURE_NAMES[i]:28s} {coefs[i]:+.3f}")
+    elif hasattr(clf_final, "feature_importances_"):
+        imp = clf_final.feature_importances_
+        order = np.argsort(-imp)
+        print("\ntop features by importance:")
+        for i in order[:8]:
+            print(f"  {FEATURE_NAMES[i]:28s} {imp[i]:.3f}")
 
 
 if __name__ == "__main__":
