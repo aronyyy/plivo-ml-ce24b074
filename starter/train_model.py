@@ -64,6 +64,32 @@ def main():
     print(f"dataset: {X.shape[0]} pauses, {len(set(groups))} turns, "
           f"pos_rate={y.mean():.3f}")
 
+    # numerical safety net: kill any leftover NaN/inf, clip extreme outliers
+    # per-feature to the 1st/99th percentile (guards against divide-by-zero
+    # or empty-window artifacts leaking into a few rows)
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+    lo = np.percentile(X, 1, axis=0)
+    hi = np.percentile(X, 99, axis=0)
+    X = np.clip(X, lo, hi)
+
+    # small C sweep via grouped CV (feature quality matters more than this,
+    # but it's a cheap win)
+    gkf = GroupKFold(n_splits=min(5, len(set(groups))))
+    candidate_Cs = [0.1, 0.3, 0.5, 1.0, 2.0]
+    best_C, best_cv_acc = 0.5, -1.0
+    for C in candidate_Cs:
+        accs = []
+        for tr_i, te_i in gkf.split(X, y, groups):
+            sc = StandardScaler().fit(X[tr_i])
+            c = LogisticRegression(max_iter=3000, class_weight="balanced", C=C)
+            c.fit(sc.transform(X[tr_i]), y[tr_i])
+            accs.append(c.score(sc.transform(X[te_i]), y[te_i]))
+        mean_acc = np.mean(accs)
+        print(f"  C={C:<5} 5-fold CV accuracy: mean={mean_acc:.3f} std={np.std(accs):.3f}")
+        if mean_acc > best_cv_acc:
+            best_cv_acc, best_C = mean_acc, C
+    print(f"selected C={best_C} (best CV accuracy={best_cv_acc:.3f})")
+
     # held-out check, split by TURN so no leakage
     gss = GroupShuffleSplit(n_splits=1, test_size=0.25, random_state=0)
     tr_idx, te_idx = next(gss.split(X, y, groups))
@@ -72,31 +98,22 @@ def main():
     X_tr = scaler.fit_transform(X[tr_idx])
     X_te = scaler.transform(X[te_idx])
 
-    clf = LogisticRegression(max_iter=2000, class_weight="balanced", C=0.5)
+    clf = LogisticRegression(max_iter=3000, class_weight="balanced", C=best_C)
     clf.fit(X_tr, y[tr_idx])
     held_out_acc = clf.score(X_te, y[te_idx])
     print(f"held-out turn accuracy: {held_out_acc:.3f} "
           f"(chance ~ {max(y.mean(), 1 - y.mean()):.3f})")
 
-    # 5-fold CV for a more stable estimate given small data
-    gkf = GroupKFold(n_splits=min(5, len(set(groups))))
-    accs = []
-    for tr_i, te_i in gkf.split(X, y, groups):
-        sc = StandardScaler().fit(X[tr_i])
-        c = LogisticRegression(max_iter=2000, class_weight="balanced", C=0.5)
-        c.fit(sc.transform(X[tr_i]), y[tr_i])
-        accs.append(c.score(sc.transform(X[te_i]), y[te_i]))
-    print(f"5-fold CV accuracy: mean={np.mean(accs):.3f} std={np.std(accs):.3f}")
-
     # refit on ALL data for the shipped model
     scaler_final = StandardScaler()
     X_all = scaler_final.fit_transform(X)
-    clf_final = LogisticRegression(max_iter=2000, class_weight="balanced", C=0.5)
+    clf_final = LogisticRegression(max_iter=3000, class_weight="balanced", C=best_C)
     clf_final.fit(X_all, y)
 
     with open(args.model_out, "wb") as f:
         pickle.dump({"scaler": scaler_final, "clf": clf_final,
-                     "n_features": N_FEATURES}, f)
+                     "n_features": N_FEATURES,
+                     "clip_lo": lo, "clip_hi": hi}, f)
     print(f"saved model -> {args.model_out}")
 
     # print feature importance (coef magnitude, since features are standardized)

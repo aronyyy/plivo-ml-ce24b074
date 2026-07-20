@@ -29,6 +29,8 @@ def main():
     with open(args.model, "rb") as f:
         bundle = pickle.load(f)
     scaler, clf = bundle["scaler"], bundle["clf"]
+    clip_lo = bundle.get("clip_lo")
+    clip_hi = bundle.get("clip_hi")
 
     labels_path = os.path.join(args.data_dir, "labels.csv")
     rows = list(csv.DictReader(open(labels_path)))
@@ -53,6 +55,9 @@ def main():
             feats.append(feat)
 
         feats = np.array(feats, dtype=np.float32)
+        feats = np.nan_to_num(feats, nan=0.0, posinf=0.0, neginf=0.0)
+        if clip_lo is not None and clip_hi is not None:
+            feats = np.clip(feats, clip_lo, clip_hi)
         feats_scaled = scaler.transform(feats)
         probs = clf.predict_proba(feats_scaled)[:, 1]
 
